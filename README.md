@@ -104,13 +104,13 @@ or [alpaca.cpp](https://github.com/antimatter15/alpaca.cpp).
 1. Build the container image:
 
 ```bash
-docker build -t alpaca-lora .
+sudo docker build -t alpaca-lora .
 ```
 
 2. Run the container (you can also use `finetune.py` and all of its parameters as shown above for training):
 
 ```bash
-docker run --gpus=all --shm-size 64g -p 7860:7860 -v ${HOME}/.cache:/root/.cache --rm alpaca-lora generate.py \
+sudo docker run --gpus=all --shm-size 64g -p 7860:7860 -v ${HOME}/.cache:/root/.cache --rm alpaca-lora generate.py \
     --load_8bit \
     --base_model 'decapoda-research/llama-7b-hf' \
     --lora_weights 'tloen/alpaca-lora-7b'

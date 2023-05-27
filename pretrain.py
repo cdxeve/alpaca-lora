@@ -1,3 +1,6 @@
+'''pretrain on pubmed domain data,
+modified based on finetune.py
+'''
 import os
 import sys
 from typing import List
@@ -27,16 +30,19 @@ from utils.prompter import Prompter
 
 def train(
     # model/data params
-    base_model: str = "/mnt/msranlpintern/daixuan/exp/adallama/hf_llama/test_mp_8",  # the only required argument
-    data_path: str = "yahma/alpaca-cleaned",
-    output_dir: str = "./lora-alpaca",
+    base_model: str = "/mnt/msranlpintern/daixuan/exp/adallama/hf_llama/test_mp_8",  # changed to ours test_mp_8 where I changed the spm model file, the model checkpoints are always right
+    data_path: str = "EleutherAI/pile",
+    data_subset: str = 'pubmed', # added subset
+    data_percent: int = None, # percent of train data will use
+    output_dir: str = "/mnt/msranlpintern/daixuan/exp/adallama/lora_pubmed",
+    cache_dir: str = "/mnt/msranlpintern/daixuan/cache",
     # training hyperparams
-    batch_size: int = 128,
-    micro_batch_size: int = 4,
-    num_epochs: int = 3,
-    learning_rate: float = 3e-4,
-    cutoff_len: int = 256,
-    val_set_size: int = 2000,
+    batch_size: int = 256, # to align with run_llama_7b_ssh.sh, the whole batch_size = 32
+    micro_batch_size: int = 1, # per_device_train_batch_size
+    num_epochs: int = 1,
+    learning_rate: float = 5e-6,
+    cutoff_len: int = 256, # 256*256 = 2048*32 (our run_llama_7b_ssh.sh settings), to ensure similar num of tokens per batch
+    val_set_size: int = 0,
     # lora hyperparams
     lora_r: int = 8,
     lora_alpha: int = 16,
@@ -47,17 +53,16 @@ def train(
     ],
     # llm hyperparams
     train_on_inputs: bool = True,  # if False, masks out inputs in loss
-    add_eos_token: bool = False,
-    group_by_length: bool = False,  # faster, but produces an odd training loss curve
+    add_eos_token: bool = True, #change from false to true for pretrain
+    group_by_length: bool = False,  # True: faster, but produces an odd training loss curve
     # wandb params
     wandb_project: str = "",
     wandb_run_name: str = "",
     wandb_watch: str = "",  # options: false | gradients | all
     wandb_log_model: str = "",  # options: false | true
     resume_from_checkpoint: str = None,  # either training checkpoint or final adapter
-    prompt_template_name: str = "alpaca",  # The prompt template to use, will default to alpaca.
-    debug: bool=False,
-    cache_dir = "/mnt/msranlpintern/daixuan/cache",
+    prompt_template_name: str = "pretrain",  # The prompt template to use, will default to alpaca.
+    debug: bool = False, # if true will load a small gpt-neo-125m for quick debug
 ):
     if int(os.environ.get("LOCAL_RANK", 0)) == 0:
         print(
@@ -94,11 +99,12 @@ def train(
 
     device_map = "auto"
     world_size = int(os.environ.get("WORLD_SIZE", 1))
+    print('world_size: ', world_size)
     ddp = world_size != 1
     if ddp:
         device_map = {"": int(os.environ.get("LOCAL_RANK") or 0)}
         gradient_accumulation_steps = gradient_accumulation_steps // world_size
-
+    print('gradient_accumulation_steps: ', gradient_accumulation_steps)
     # Check if parameter passed or if set within environ
     use_wandb = len(wandb_project) > 0 or (
         "WANDB_PROJECT" in os.environ and len(os.environ["WANDB_PROJECT"]) > 0
@@ -110,35 +116,38 @@ def train(
         os.environ["WANDB_WATCH"] = wandb_watch
     if len(wandb_log_model) > 0:
         os.environ["WANDB_LOG_MODEL"] = wandb_log_model
-    # # debug
-    # if debug:
-    #     print('debug mode...')
-    #     model = AutoModelForCausalLM.from_pretrained(
-    #         'EleutherAI/gpt-neo-125M',
-    #         load_in_8bit=True,
-    #         torch_dtype=torch.float16,
-    #         device_map=device_map,
-    #         cache_dir=cache_dir,
-    #     )
 
-    #     tokenizer = AutoTokenizer.from_pretrained('EleutherAI/gpt-neo-125M', cache_dir=cache_dir,)
+    # debug
+    if debug:
+        print('debug mode...')
+        model = AutoModelForCausalLM.from_pretrained(
+            'EleutherAI/gpt-neo-125M',
+            load_in_8bit=True if not ddp else False, # load_in_8bit does not support ddp
+            torch_dtype=torch.float16,
+            device_map=device_map,
+            cache_dir=cache_dir,
+        )
 
-    #     tokenizer.pad_token_id = (
-    #         0  # unk. we want this to be different from the eos token
-    #     )
-    # else:
-    model = LlamaForCausalLM.from_pretrained(
-        base_model,
-        load_in_8bit=True,
-        torch_dtype=torch.float16,
-        device_map=device_map,
-    )
+        tokenizer = AutoTokenizer.from_pretrained('EleutherAI/gpt-neo-125M', cache_dir=cache_dir,)
 
-    tokenizer = LlamaTokenizer.from_pretrained(base_model)
+        tokenizer.pad_token_id = (
+            0  # unk. we want this to be different from the eos token
+        )
+    else:
+        model = LlamaForCausalLM.from_pretrained(
+            base_model,
+            load_in_8bit=True if not ddp else False, # load_in_8bit does not support ddp
+            torch_dtype=torch.float16,
+            device_map=device_map,
+            cache_dir=cache_dir,
+        )
 
-    tokenizer.pad_token_id = (
-        0  # unk. we want this to be different from the eos token
-    )
+        tokenizer = LlamaTokenizer.from_pretrained(base_model, cache_dir=cache_dir,)
+
+        tokenizer.pad_token_id = (
+            # 0  # unk. we want this to be different from the eos token
+            32000 # change to ours
+        )
     tokenizer.padding_side = "left"  # Allow batched inference
 
     def tokenize(prompt, add_eos_token=True):
@@ -163,14 +172,20 @@ def train(
 
         return result
 
-    def generate_and_tokenize_prompt(data_point):
-        full_prompt = prompter.generate_prompt(
-            data_point["instruction"],
-            data_point["input"],
-            data_point["output"],
-        )
+    def generate_and_tokenize_prompt(data_point): # understand this and change
+        if prompt_template_name == 'pretrain':
+            full_prompt = prompter.generate_prompt(
+                data_point["text"], # NOTE: pretrain corpus has text only
+            )
+        else:
+            full_prompt = prompter.generate_prompt(
+                data_point["instruction"],
+                data_point["input"],
+                data_point["output"],
+            )
         tokenized_full_prompt = tokenize(full_prompt)
         if not train_on_inputs:
+            print('if not train_on_inputs')
             user_prompt = prompter.generate_prompt(
                 data_point["instruction"], data_point["input"]
             )
@@ -204,7 +219,11 @@ def train(
     if data_path.endswith(".json") or data_path.endswith(".jsonl"):
         data = load_dataset("json", data_files=data_path)
     else:
-        data = load_dataset(data_path)
+        if data_percent is not None:
+            print(f'load {data_percent}% train data')
+            data = load_dataset(data_path, data_subset, split=f"train[:{data_percent}%]", cache_dir=cache_dir) #added data_split
+        else:
+            data = load_dataset(data_path, data_subset, split="train", cache_dir=cache_dir) #added data_split
 
     if resume_from_checkpoint:
         # Check the available weights and load them
@@ -239,13 +258,22 @@ def train(
             train_val["test"].shuffle().map(generate_and_tokenize_prompt)
         )
     else:
-        train_data = data["train"].shuffle().map(generate_and_tokenize_prompt)
+        #train_data = data["train"].shuffle().map(generate_and_tokenize_prompt)
+        # we have choosen the train split in load dataset above
+        if debug:
+            train_data = data.shuffle().map(generate_and_tokenize_prompt)
+        else:
+            train_data = data.shuffle().map(generate_and_tokenize_prompt, num_proc = 40)
         val_data = None
 
     if not ddp and torch.cuda.device_count() > 1:
+        print('keeps Trainer from trying its own DataParallelism when more than 1 gpu is available')
         # keeps Trainer from trying its own DataParallelism when more than 1 gpu is available
         model.is_parallelizable = True
         model.model_parallel = True
+    
+    rank = int(os.environ.get("LOCAL_RANK", 0))
+    print(f'cur rank {rank}')
 
     trainer = transformers.Trainer(
         model=model,
@@ -254,7 +282,7 @@ def train(
         args=transformers.TrainingArguments(
             per_device_train_batch_size=micro_batch_size,
             gradient_accumulation_steps=gradient_accumulation_steps,
-            warmup_steps=100,
+            warmup_steps=1000,
             num_train_epochs=num_epochs,
             learning_rate=learning_rate,
             fp16=True,
@@ -263,14 +291,20 @@ def train(
             evaluation_strategy="steps" if val_set_size > 0 else "no",
             save_strategy="steps",
             eval_steps=200 if val_set_size > 0 else None,
-            save_steps=200,
+            save_steps=500, # change to ours
             output_dir=output_dir,
-            save_total_limit=3,
+            # save_total_limit=3,
             load_best_model_at_end=True if val_set_size > 0 else False,
             ddp_find_unused_parameters=False if ddp else None,
             group_by_length=group_by_length,
             report_to="wandb" if use_wandb else None,
             run_name=wandb_run_name if use_wandb else None,
+            weight_decay=0.01,
+            adam_beta2=0.98,
+            max_grad_norm=2.0, # clip norm
+            max_steps=10000,
+            lr_scheduler_type='polynomial',
+            logging_dir=output_dir,
         ),
         data_collator=transformers.DataCollatorForSeq2Seq(
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
@@ -286,12 +320,10 @@ def train(
     ).__get__(model, type(model))
 
     if torch.__version__ >= "2" and sys.platform != "win32":
-        print(os.environ.get("LOCAL_RANK", 0), 'complied here')
         model = torch.compile(model)
 
     with torch.autocast("cuda"):
         trainer.train(resume_from_checkpoint=resume_from_checkpoint)
-
 
     model.save_pretrained(output_dir)
 

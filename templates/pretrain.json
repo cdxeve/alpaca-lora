@@ -1,0 +1,4 @@
+{
+    "description": "Template used for pretraining on pubmed.",
+    "prompt_no_input": "{instruction}"
+}
