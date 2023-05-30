@@ -34,13 +34,13 @@ def train(
     data_path: str = "EleutherAI/pile",
     data_subset: str = 'pubmed', # added subset
     data_percent: int = None, # percent of train data will use
-    output_dir: str = "/mnt/msranlpintern/daixuan/exp/adallama/lora_pubmed",
+    output_dir: str = "/mnt/msranlpintern/daixuan/exp/adallama/lora_alpaca_pubmed_1%subset_LR1e-4",
     cache_dir: str = "/mnt/msranlpintern/daixuan/cache",
     # training hyperparams
     batch_size: int = 256, # to align with run_llama_7b_ssh.sh, the whole batch_size = 32
     micro_batch_size: int = 1, # per_device_train_batch_size
     num_epochs: int = 1,
-    learning_rate: float = 5e-6,
+    learning_rate: float = 1e-4,
     cutoff_len: int = 256, # 256*256 = 2048*32 (our run_llama_7b_ssh.sh settings), to ensure similar num of tokens per batch
     val_set_size: int = 0,
     # lora hyperparams
